@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+public/*.json
+latest.json
+sample_data.json
+scratch_latest.json
+inspect_data.py
+dump_html.py
+.agents/
+.codex/
+*.log

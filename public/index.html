@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swim Schedule Data Feed</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; }
+    code { background: #eee; padding: 0.15rem 0.35rem; border-radius: 0.25rem; }
+  </style>
+</head>
+<body>
+  <h1>Swim Schedule Data Feed</h1>
+  <p>This site publishes a compact, machine-readable feed of weekend lane swims at Brewer, Minto Barrhaven, Richcraft Kanata, and Nepean Sportsplex.</p>
+
+  <h2>Files</h2>
+  <ul>
+    <li><a href="schedule.json"><code>schedule.json</code></a> — compact device feed</li>
+    <li><a href="notices.json"><code>notices.json</code></a> — plain-text notice details referenced by the feed</li>
+  </ul>
+
+  <h2>Attribution</h2>
+  <p>Compiled data © Patrick Gaskin, <a href="https://github.com/ottrec/scraper">ottrec scraper</a>. Facility information and schedules © City of Ottawa. Additional attribution from the source dataset is preserved in <code>schedule.json</code>.</p>
+
+  <h2>Disclaimer</h2>
+  <p>This unofficial feed can be delayed or incomplete. Check the City of Ottawa before travelling. Sessions affected by an ambiguous notice are explicitly marked <code>uncertain</code>; the feed does not ask devices to parse HTML.</p>
+</body>
+</html>

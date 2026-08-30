@@ -1,0 +1,85 @@
+name: Refresh Schedule
+
+on:
+  schedule:
+    - cron: '17 2,14 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Run offline regression tests
+        run: python -m unittest discover -v tests
+
+      - name: Download latest data
+        run: |
+          curl --fail --show-error --silent --location \
+            --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 \
+            --output "$RUNNER_TEMP/latest.json" \
+            https://data.ottrec.ca/export/latest.json
+
+      - name: Build isolated Pages output
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          cp public/index.html "$RUNNER_TEMP/site/index.html"
+          python reducer/reducer.py \
+            --input "$RUNNER_TEMP/latest.json" \
+            --output "$RUNNER_TEMP/site/schedule.json" \
+            --notices-output "$RUNNER_TEMP/site/notices.json"
+        env:
+          TZ: "America/Toronto"
+
+      - name: Verify intended artifact contents
+        run: |
+          python - "$RUNNER_TEMP/site" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          site = Path(sys.argv[1])
+          actual = {path.name for path in site.iterdir() if path.is_file()}
+          expected = {"index.html", "schedule.json", "notices.json"}
+          if actual != expected:
+              raise SystemExit(f"unexpected artifact contents: {sorted(actual)}")
+          with (site / "schedule.json").open(encoding="utf-8") as stream:
+              schedule = json.load(stream)
+          if schedule.get("validity", {}).get("sourceStatus") != "valid":
+              raise SystemExit("refusing to upload a feed without valid source status")
+          PY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
