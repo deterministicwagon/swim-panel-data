@@ -19,6 +19,7 @@ import zoneinfo
 TIMEZONE = "America/Toronto"
 SOURCE_URL = "https://data.ottrec.ca/export/latest.json"
 HORIZON_DAYS = 14
+MAX_SOURCE_AGE_DAYS = 2
 TARGET_FACILITIES = {
     "brewer-pool-and-arena": "Brewer Pool and Arena",
     "minto-recreation-complex-barrhaven": "Minto Recreation Complex - Barrhaven",
@@ -149,6 +150,11 @@ def _parse_scraped_at(value: Any, facility_id: str) -> str:
                 f"facility {facility_id} has invalid scrapedAt value {value!r}"
             ) from exc
     return value
+
+
+def _scraped_date(value: str) -> date:
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    return datetime.fromisoformat(candidate).date()
 
 
 def _is_lane_swim(name: Any) -> bool:
@@ -455,6 +461,17 @@ def build_outputs(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     facilities, activities, html_map, attribution = _validate_source(data)
     ref = ref_date.date() if isinstance(ref_date, datetime) else ref_date
+    for facility in facilities:
+        slug = _slug(facility["url"])
+        age_days = (ref - _scraped_date(facility["scrapedAt"])).days
+        if age_days > MAX_SOURCE_AGE_DAYS:
+            raise SourceValidationError(
+                f"target facility {slug} source is stale by {age_days} days"
+            )
+        if age_days < -1:
+            raise SourceValidationError(
+                f"target facility {slug} scrapedAt is unexpectedly in the future"
+            )
     target_dates = get_target_dates(ref)
     horizon_end = ref + timedelta(days=HORIZON_DAYS - 1)
     tz = zoneinfo.ZoneInfo(TIMEZONE)

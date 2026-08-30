@@ -1,12 +1,12 @@
 # Swim Panel Data
 
-This repository builds a public schedule-data feed for an RP2350 LED frame. It does not contain the frame firmware. The source is the unofficial [ottrec export](https://data.ottrec.ca/export/latest.json), which compiles City of Ottawa facility schedules.
+This repository builds a public schedule-data feed for an RP2350 LED frame. It does not contain the frame firmware. The source is the third-party, unofficial [ottrec export](https://data.ottrec.ca/export/latest.json), which extracts schedule data from City of Ottawa facility pages; it is not an official City repository or API.
 
 The reducer selects Brewer Pool and Arena, Minto Recreation Complex - Barrhaven, Richcraft Recreation Complex-Kanata, and Nepean Sportsplex by exact Ottawa facility URL slug and expected name. It emits explicit Saturday and Sunday dates in a rolling 14-day `America/Toronto` horizon. Activities whose normalized name contains the words `lane swim` are included, except names containing `reduced capacity`.
 
 ## Safety and interpretation
 
-The source is validated before either output is replaced. The reducer rejects a missing or malformed top-level structure, a missing or duplicated target facility, target scraper errors, invalid target dates or times, missing session times, missing referenced HTML, and missing attribution. This means an invalid or unavailable target source cannot be mistaken for a valid empty schedule. A structurally valid source with no matching sessions produces a valid feed with `sessionCount: 0`.
+The source is validated before either output is replaced. The reducer rejects a missing or malformed top-level structure, a missing or duplicated target facility, target scraper errors, target data more than two calendar days old, invalid target dates or times, missing session times, missing referenced HTML, and missing attribution. This means unavailable, invalid, or stale target data cannot be mistaken for a valid empty schedule or hidden behind a new generation timestamp. A structurally valid and fresh source with no matching sessions produces a valid feed with `sessionCount: 0`.
 
 Output files are written through temporary files and atomically renamed. The Pages workflow downloads raw data into runner temporary storage, runs the offline tests, and uploads only `index.html`, `schedule.json`, and `notices.json`. A failed download, test, validation, or generation prevents deployment, leaving the last successfully published Pages deployment in place.
 
@@ -56,7 +56,7 @@ Use `--ref-date YYYY-MM-DD` for deterministic samples and `--pretty` for human-r
 
 ## Publishing (not automatic from this checkout)
 
-The workflow is scheduled twice daily, at 02:17 and 14:17 UTC, and also supports a manual dispatch. Scheduled runs can be delayed under load, and GitHub disables scheduled workflows in public repositories after 60 days without repository activity.
+The workflow is scheduled twice daily, at 02:17 and 14:17 UTC, and also supports a manual dispatch. In Ottawa this is 10:17 pm (previous day) and 10:17 am during EDT, or 9:17 pm (previous day) and 9:17 am during EST. Scheduled runs can be delayed under load, and GitHub disables scheduled workflows in public repositories after 60 days without repository activity.
 
 To publish after review:
 

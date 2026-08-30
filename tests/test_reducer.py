@@ -208,6 +208,13 @@ class ReducerRegressionTests(unittest.TestCase):
         feed, _ = self.build(data)
         self.assertEqual(feed["validity"]["sourceStatus"], "valid")
 
+    def test_stale_target_source_is_rejected_instead_of_freshly_timestamped(self):
+        data = source_data()
+        for item in data["facility"]:
+            item["scrapedAt"] = "2026-08-26"
+        with self.assertRaisesRegex(SourceValidationError, "source is stale"):
+            self.build(data)
+
     def test_empty_object_is_rejected_not_treated_as_no_swims(self):
         with self.assertRaisesRegex(SourceValidationError, "missing required"):
             self.build({})
