@@ -31,6 +31,8 @@ Temporary closure dates are parsed from source notices; none are hardcoded.
 - `facilities[]`: exact facility identity, source freshness, parsed closure ranges, removed cancellations, facility warning references, and generated schedules.
 - `facilities[].schedules[]`: explicit date, activity name, `HH:MM` times, reservation requirement, `scheduled` or `uncertain` status, and warning IDs.
 
+`race.json` is a separate, tiny (under 512 bytes) weekly summary for the frame's clock. It is not derived from ottrec. Its source is a private upstream endpoint whose URL is held only as the `RACE_SUMMARY_URL` Actions secret. It contains exactly `version` (1), `week_start` (a Monday) and `week_end` (the following Sunday) as `YYYY-MM-DD`, `timezone` (`America/Toronto`), `generated_at` (local ISO time with offset), and `a` and `b`: two anonymous whole-metre totals for that week. It holds no names, session records, times, locations, or history. `reducer/race.py` accepts only that exact field set. It rejects anything else, including extra fields, and rebuilds the file from the validated values. A fresh summary must have been generated within 10 minutes of the run. Consumers must judge freshness from `generated_at`, not from when they downloaded the file.
+
 `notices.json` is schema version 1. It contains the longer plain-text notice details keyed by the IDs referenced from `schedule.json`, plus the matching schedule and source hashes. Informational source notices may be present even when they do not alter a swim.
 
 Consumers should reject unsupported schema versions, verify that `validity.sourceStatus` is `valid`, compare `contentHash`, inspect `generatedAt` separately from `source.freshness`, and treat `uncertain` sessions as requiring confirmation. An expired horizon or stale source freshness must not be interpreted as current availability.
@@ -41,6 +43,8 @@ Python 3.10 or newer and the standard library are sufficient.
 
 ```bash
 python -m unittest discover -v tests
+
+python reducer/race.py summary --input upstream-race.json --output /tmp/race.json
 
 curl --fail --show-error --silent --location \
   https://data.ottrec.ca/export/latest.json \
@@ -56,15 +60,22 @@ Use `--ref-date YYYY-MM-DD` for deterministic samples and `--pretty` for human-r
 
 ## Publishing (not automatic from this checkout)
 
-The workflow is scheduled twice daily, at 02:17 and 14:17 UTC, and also supports a manual dispatch. In Ottawa this is 10:17 pm (previous day) and 10:17 am during EDT, or 9:17 pm (previous day) and 9:17 am during EST. Scheduled runs can be delayed under load, and GitHub disables scheduled workflows in public repositories after 60 days without repository activity.
+The workflow has two schedules and a manual dispatch:
+
+- **Full refresh** at 02:17 and 14:17 UTC rebuilds `schedule.json` and `notices.json` from ottrec and refreshes `race.json`. In Ottawa this is 10:17 pm (previous day) and 10:17 am during EDT, or 9:17 pm (previous day) and 9:17 am during EST. If only the race summary fails here, the currently published `race.json` is re-validated and carried forward. With none published yet, the site deploys without it.
+- **Race refresh** at minutes 07, 22, 37, and 52 of every hour refreshes only `race.json`. A Pages deployment replaces the whole site, so these runs download the currently published `schedule.json` and `notices.json`. A unique query bypasses the CDN cache. The runs check that the pair is still valid and hash-linked, then deploy it byte-for-byte alongside the new `race.json`. They never contact ottrec. If the race summary fails, the run fails and nothing deploys, leaving the last deployment in place. Until the `RACE_SUMMARY_URL` secret exists, race runs exit early without deploying.
+- **Manual dispatch** defaults to a full refresh. Clear `rebuild_schedule` to run a race-only refresh.
+
+Scheduled runs can be delayed under load, and GitHub disables scheduled workflows in public repositories after 60 days without repository activity.
 
 To publish after review:
 
 1. Create the initial commit and push `main` to `deterministicwagon/swim-panel-data`.
 2. In the repository Pages settings, select **GitHub Actions** as the publishing source.
-3. Run **Refresh Schedule** manually once and inspect its build and deploy jobs.
-4. Verify the Pages URLs for `schedule.json` and `notices.json`, their hashes, validity, freshness, and attribution.
+3. Add the repository secret `RACE_SUMMARY_URL` (Settings → Secrets and variables → Actions) once the upstream summary endpoint is deployed.
+4. Run **Refresh Schedule** manually once and inspect its build and deploy jobs.
+5. Verify the Pages URLs for `schedule.json`, `notices.json`, and `race.json`, their hashes, validity, freshness, and attribution.
 
-The workflow grants only `contents: read` to the build job. The separate deploy job receives `pages: write` and `id-token: write`, and uses the protected `github-pages` environment. No workflow commits generated data back to the repository.
+The workflow grants only `contents: read` to the build job. The separate deploy job receives `pages: write` and `id-token: write`, and uses the protected `github-pages` environment. No workflow commits generated data back to the repository. The race summary source URL is never printed, and the raw upstream response is never uploaded.
 
 GitHub operational references: [custom Pages workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages), [workflow permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax), and [scheduled-workflow disabling](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/disable-and-enable-workflows).

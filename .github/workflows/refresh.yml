@@ -2,8 +2,17 @@ name: Refresh Schedule
 
 on:
   schedule:
+    # Full refresh: schedule, notices, and the weekly race summary.
     - cron: '17 2,14 * * *'
+    # Race summary only. Every deployment replaces the whole site, so these
+    # runs carry the published schedule/notices pair forward unchanged.
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
+    inputs:
+      rebuild_schedule:
+        description: Rebuild schedule.json and notices.json from the source
+        type: boolean
+        default: true
 
 concurrency:
   group: "pages"
@@ -14,21 +23,52 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      deploy: ${{ steps.plan.outputs.deploy }}
+    env:
+      PAGES_URL: https://deterministicwagon.github.io/swim-panel-data
+      RACE_SUMMARY_URL: ${{ secrets.RACE_SUMMARY_URL }}
     steps:
+      - name: Decide what this run refreshes
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          REBUILD_SCHEDULE: ${{ inputs.rebuild_schedule }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            full="$REBUILD_SCHEDULE"
+          elif [ "$EVENT_SCHEDULE" = "17 2,14 * * *" ]; then
+            full=true
+          else
+            full=false
+          fi
+          deploy=true
+          if [ "$full" != true ] && [ -z "$RACE_SUMMARY_URL" ]; then
+            echo "No race summary source is configured; nothing to refresh."
+            deploy=false
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
+        if: steps.plan.outputs.deploy == 'true'
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Setup Python
+        if: steps.plan.outputs.deploy == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Run offline regression tests
+        if: steps.plan.outputs.deploy == 'true'
         run: python -m unittest discover -v tests
 
       - name: Download latest data
+        if: steps.plan.outputs.full == 'true'
         run: |
           curl --fail --show-error --silent --location \
             --retry 3 --retry-all-errors --connect-timeout 20 --max-time 120 \
@@ -36,6 +76,7 @@ jobs:
             https://data.ottrec.ca/export/latest.json
 
       - name: Build isolated Pages output
+        if: steps.plan.outputs.full == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/site"
           cp public/index.html "$RUNNER_TEMP/site/index.html"
@@ -46,25 +87,83 @@ jobs:
         env:
           TZ: "America/Toronto"
 
+      - name: Carry forward the published schedule
+        if: steps.plan.outputs.deploy == 'true' && steps.plan.outputs.full != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/site"
+          cp public/index.html "$RUNNER_TEMP/site/index.html"
+          # A unique query bypasses the Pages CDN cache, so a copy from before
+          # the latest full refresh can never be redeployed over it.
+          for name in schedule.json notices.json; do
+            curl --fail --show-error --silent --location \
+              --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 \
+              --max-filesize 524288 --output "$RUNNER_TEMP/site/$name" \
+              "$PAGES_URL/$name?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          done
+          python reducer/race.py feeds \
+            --schedule "$RUNNER_TEMP/site/schedule.json" \
+            --notices "$RUNNER_TEMP/site/notices.json"
+
+      - name: Refresh race summary
+        if: steps.plan.outputs.deploy == 'true'
+        env:
+          FULL: ${{ steps.plan.outputs.full }}
+        run: |
+          raw="$RUNNER_TEMP/race-upstream.json"
+          # No --show-error or verbose output: the source URL stays out of logs.
+          if [ -n "$RACE_SUMMARY_URL" ] \
+            && curl --fail --silent --location \
+                 --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 \
+                 --max-filesize 4096 --output "$raw" "$RACE_SUMMARY_URL" \
+            && python reducer/race.py summary \
+                 --input "$raw" --output "$RUNNER_TEMP/site/race.json"; then
+            exit 0
+          fi
+          if [ "$FULL" != true ]; then
+            echo "::error::Race summary refresh failed; the current deployment stays."
+            exit 1
+          fi
+          echo "::warning::Race summary refresh failed; carrying race.json forward."
+          published="$RUNNER_TEMP/race-published.json"
+          if curl --fail --silent --location \
+               --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 \
+               --max-filesize 4096 --output "$published" \
+               "$PAGES_URL/race.json?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            && python reducer/race.py carry \
+                 --input "$published" --output "$RUNNER_TEMP/site/race.json"; then
+            exit 0
+          fi
+          echo "::warning::No valid published race.json to carry; publishing without it."
+
       - name: Verify intended artifact contents
+        if: steps.plan.outputs.deploy == 'true'
         run: |
           python - "$RUNNER_TEMP/site" <<'PY'
           import json
           from pathlib import Path
           import sys
 
+          from reducer.race import FIELDS, MAX_BYTES
+
           site = Path(sys.argv[1])
           actual = {path.name for path in site.iterdir() if path.is_file()}
-          expected = {"index.html", "schedule.json", "notices.json"}
-          if actual != expected:
+          required = {"index.html", "schedule.json", "notices.json"}
+          if not required <= actual <= required | {"race.json"}:
               raise SystemExit(f"unexpected artifact contents: {sorted(actual)}")
           with (site / "schedule.json").open(encoding="utf-8") as stream:
               schedule = json.load(stream)
           if schedule.get("validity", {}).get("sourceStatus") != "valid":
               raise SystemExit("refusing to upload a feed without valid source status")
+          race = site / "race.json"
+          if race.exists():
+              if race.stat().st_size > MAX_BYTES:
+                  raise SystemExit("race.json exceeds the device size limit")
+              if tuple(json.loads(race.read_bytes())) != FIELDS:
+                  raise SystemExit("race.json fields differ from the contract")
           PY
 
       - name: Upload Pages artifact
+        if: steps.plan.outputs.deploy == 'true'
         uses: actions/upload-pages-artifact@v5
         with:
           path: ${{ runner.temp }}/site
@@ -72,6 +171,7 @@ jobs:
 
   deploy:
     needs: build
+    if: needs.build.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write
