@@ -3,9 +3,9 @@
 The summary comes from a private upstream endpoint whose URL is held as a
 workflow secret. It carries two anonymous weekly distance totals, `a` and
 `b`, in whole metres for the Monday-Sunday America/Toronto week. This module
-never adds meaning to those keys. It accepts exactly the published contract
-and rebuilds the output from validated values, so an upstream change cannot
-leak extra fields.
+never adds meaning to those keys. It accepts the legacy weekly contract or an opt-in v2 with bounded anonymous
+aggregate distances/counts. It rebuilds both from validated fields, so an
+upstream change cannot leak session rows or extra fields.
 
 It also checks the currently published schedule.json/notices.json pair, so a
 race-only refresh can carry that pair forward unchanged.
@@ -27,7 +27,8 @@ import zoneinfo
 TIMEZONE = "America/Toronto"
 ZONE = zoneinfo.ZoneInfo(TIMEZONE)
 FIELDS = ("version", "week_start", "week_end", "timezone", "generated_at", "a", "b")
-MAX_BYTES = 512  # The frame rejects anything larger.
+COMP_FIELDS = FIELDS + ("stats",)
+MAX_BYTES = 1024  # Compact aggregates fit within the Clock relay's unchanged 4 KB body cap.
 MAX_METRES = 1_000_000
 # A fresh upstream summary must have been generated within this window of now.
 FRESH_WINDOW = timedelta(minutes=10)
@@ -62,10 +63,11 @@ def validate_summary(data: Any, now: datetime, max_age: timedelta = FRESH_WINDOW
         raise ValueError("now must be timezone-aware")
     if not isinstance(data, dict):
         raise RaceValidationError("summary is not an object")
-    if set(data) != set(FIELDS):
+    fields = COMP_FIELDS if data.get("version") == 2 else FIELDS
+    if set(data) != set(fields):
         # Fail closed: an unexpected field could be data that must not publish.
         raise RaceValidationError("summary fields differ from the contract")
-    if data["version"] != 1 or isinstance(data["version"], bool):
+    if data["version"] not in (1, 2) or isinstance(data["version"], bool):
         raise RaceValidationError("unsupported version")
     if data["timezone"] != TIMEZONE:
         raise RaceValidationError("unexpected timezone")
@@ -91,8 +93,8 @@ def validate_summary(data: Any, now: datetime, max_age: timedelta = FRESH_WINDOW
         raise RaceValidationError("generated_at is in the future")
     if now - generated > max_age:
         raise RaceValidationError("summary is stale")
-    return {
-        "version": 1,
+    result = {
+        "version": data["version"],
         "week_start": start.isoformat(),
         "week_end": end.isoformat(),
         "timezone": TIMEZONE,
@@ -100,11 +102,50 @@ def validate_summary(data: Any, now: datetime, max_age: timedelta = FRESH_WINDOW
         "a": _metres(data["a"], "a"),
         "b": _metres(data["b"], "b"),
     }
+    if data["version"] == 2:
+        result["stats"] = _competition(data["stats"], local.date(), start, result["a"], result["b"])
+    return result
+
+
+def _competition(value: Any, day: date, monday: date, a: int, b: int) -> dict[str, Any]:
+    fields = ("v", "d", "w", "c", "p", "m", "y", "l", "x")
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise RaceValidationError("stats fields differ from the contract")
+    key = lambda item: int(item.strftime("%Y%m%d"))
+    if (type(value["v"]) is not int or value["v"] != 1
+            or type(value["d"]) is not int or value["d"] != key(day)
+            or type(value["w"]) is not int or value["w"] != key(monday)):
+        raise RaceValidationError("stats calendar differs from the source")
+    clean = {"v": 1, "d": value["d"], "w": value["w"]}
+    for period in ("c", "p", "m", "y", "l"):
+        row = value[period]
+        if not isinstance(row, list) or len(row) != 4:
+            raise RaceValidationError("stats period is not a four-value list")
+        for index, number in enumerate(row):
+            limit = 100000 if index % 2 else (1000000 if period in ("c", "p") else 100000000)
+            if type(number) is not int or not 0 <= number <= limit:
+                raise RaceValidationError("stats metric is out of range")
+        if row[0] > 0 and row[1] == 0 or row[2] > 0 and row[3] == 0:
+            raise RaceValidationError("stats distance has no swims")
+        clean[period] = row[:]
+    longest = value["x"]
+    if (not isinstance(longest, list) or len(longest) != 2
+            or any(type(n) is not int or not 0 <= n <= 1000000 for n in longest)
+            or longest[0] > clean["c"][0] or longest[1] > clean["c"][2]
+            or clean["c"][0] != a or clean["c"][2] != b):
+        raise RaceValidationError("stats weekly distances disagree")
+    for period in ("c", "p", "m", "y"):
+        if any(clean[period][i] > clean["l"][i] for i in range(4)):
+            raise RaceValidationError("stats period exceeds lifetime")
+    if any(clean["m"][i] > clean["y"][i] for i in range(4)):
+        raise RaceValidationError("stats month exceeds year")
+    clean["x"] = longest[:]
+    return clean
 
 
 def encode(summary: dict[str, Any]) -> bytes:
     payload = json.dumps(
-        {key: summary[key] for key in FIELDS}, separators=(",", ":")
+        {key: summary[key] for key in (COMP_FIELDS if summary["version"] == 2 else FIELDS)}, separators=(",", ":")
     ).encode("utf-8")
     if len(payload) > MAX_BYTES:
         raise RaceValidationError("race.json exceeds the device size limit")

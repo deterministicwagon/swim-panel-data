@@ -114,7 +114,8 @@ jobs:
           if [ -n "$RACE_SUMMARY_URL" ] \
             && curl --fail --silent --location \
                  --retry 3 --retry-all-errors --connect-timeout 20 --max-time 60 \
-                 --max-filesize 4096 --output "$raw" "$RACE_SUMMARY_URL" \
+                 --max-filesize 4096 --get --data-urlencode summary=comp \
+                 --output "$raw" "$RACE_SUMMARY_URL" \
             && python reducer/race.py summary \
                  --input "$raw" --output "$RUNNER_TEMP/site/race.json"; then
             exit 0
@@ -143,7 +144,7 @@ jobs:
           from pathlib import Path
           import sys
 
-          from reducer.race import FIELDS, MAX_BYTES
+          from reducer.race import FIELDS, COMP_FIELDS, MAX_BYTES
 
           site = Path(sys.argv[1])
           actual = {path.name for path in site.iterdir() if path.is_file()}
@@ -158,7 +159,9 @@ jobs:
           if race.exists():
               if race.stat().st_size > MAX_BYTES:
                   raise SystemExit("race.json exceeds the device size limit")
-              if tuple(json.loads(race.read_bytes())) != FIELDS:
+              summary = json.loads(race.read_bytes())
+              fields = COMP_FIELDS if summary["version"] == 2 else FIELDS
+              if tuple(summary) != fields:
                   raise SystemExit("race.json fields differ from the contract")
           PY
 
